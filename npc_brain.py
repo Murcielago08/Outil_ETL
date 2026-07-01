@@ -108,7 +108,7 @@ def localize(world_map, entity):
 
 # %%
 def compute_distances(entities_positions, reference_pos):
-    if (len(entities_positions) == 0):
+    if len(entities_positions) == 0:
         return np.array([])
     
     v = entities_positions - reference_pos
@@ -117,28 +117,41 @@ def compute_distances(entities_positions, reference_pos):
     return np.round(distances, 2)
 
 
+def compute_nearest_delta(entities_positions, reference_pos):
+    if len(entities_positions) == 0:
+        return {"row": 0, "col": 0}
+
+    deltas = entities_positions - reference_pos
+    distances = np.linalg.norm(deltas, axis=1)
+    nearest_idx = int(np.argmin(distances))
+    nearest_delta = deltas[nearest_idx]
+
+    return {
+        "row": int(nearest_delta[0]),
+        "col": int(nearest_delta[1])
+    }
+
+
 # %%
 def perception(world_map):
 
-    player_position = localize(world_map, PLAYER)
+    player_position = localize(world_map, PLAYER)[0]
     golds_positions = localize(world_map, GOLD)
     ennemies_positions = localize(world_map, ENNEMY)
 
     golds_distances = compute_distances(golds_positions, player_position)
     ennemies_distances = compute_distances(ennemies_positions, player_position)
 
-    # percreption directionnelle → delta signé
-    nearest_gold_delta = {
-        "row": 0,
-        "col": 0
-    }
+    nearest_gold_delta = compute_nearest_delta(golds_positions, player_position)
+    nearest_ennemy_delta = compute_nearest_delta(ennemies_positions, player_position)
 
     return {
         "ennemies_distances": ennemies_distances.tolist(),
         "ennemies_count": len(ennemies_distances),
+        "nearest_ennemy_delta": nearest_ennemy_delta,
         "golds_distances": golds_distances.tolist(),
         "golds_count": len(golds_distances),
-        # "nearest_gold_delta": nearest_gold_delta,
+        "nearest_gold_delta": nearest_gold_delta,
     }
 
 

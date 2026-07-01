@@ -2,3 +2,4 @@
 .env
 ETL/
 cours/
+__pycache__

@@ -1,2 +1,4 @@
-silver_parquet/*
-*7z
+.vscode
+.env
+ETL/
+cours/

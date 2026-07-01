@@ -55,7 +55,7 @@ SYMBOLS = {VOID: "·", PLAYER: "👤", ENNEMY: "👹", GOLD: "💰"}
 # %%
 initial_map = np.array([
     [0, 0, 0, 0, 0, 0, 0],
-    [3, 1, 0, 0, 2, 0, 3], # (1, 1) # (1, 4) # (1, 6)
+    [0, 1, 0, 0, 2, 0, 3], # (1, 1) # (1, 4) # (1, 6)
     [0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0],
@@ -156,9 +156,15 @@ def perception(world_map):
 
 
 # %%
+def render_map(world_map):
+    return "\n".join(
+        "\t".join(SYMBOLS.get(cell, "?") for cell in row)
+        for row in world_map
+    )
+
+
 def show_map(world_map):
-    for row in world_map:
-        print("\t".join(SYMBOLS.get(cell, "?") for cell in row))
+    print(render_map(world_map))
     print('-----------------------------------------------------')
 
 
@@ -176,14 +182,25 @@ def allowed_move(world_map: np.ndarray, pos):
     return world_map[r, c] in (VOID, GOLD)
 
 
+def available_directions(world_map: np.ndarray, pos):
+    r, c = pos
+    return [
+        direction
+        for direction, (d_row, d_col) in MOVES.items()
+        if allowed_move(world_map, (r + d_row, c + d_col))
+    ]
+
+
 # %%
 def move(world_map: np.ndarray, old_pos, new_pos):
     move_result = {
         "gold_collected": False,
-        "new_pos": old_pos
+        "new_pos": old_pos,
+        "invalid_move": False,
     }
 
     if not allowed_move(world_map, new_pos):
+        move_result["invalid_move"] = True
         return move_result
 
     entity = world_map[old_pos[0], old_pos[1]]
@@ -203,7 +220,13 @@ def move(world_map: np.ndarray, old_pos, new_pos):
 # # Moteur de décision
 
 # %%
-def decide(player_perception) -> PlayerDecision | None:
+def decide(player_perception, world_map: np.ndarray, last_move_feedback: str | None = None) -> PlayerDecision | None:
+    feedback_block = f"""
+    # Feedback du tour précédent
+    - {last_move_feedback}
+    - Ne refais pas ce mouvement, choisis une autre direction.
+    """ if last_move_feedback else ""
+
     prompt = f"""
     # Contexte
     - Tu es un joueur qui veut ramasser de l'or
@@ -211,6 +234,15 @@ def decide(player_perception) -> PlayerDecision | None:
     # Objectif
     - Trouve le plus court chemin vers l'or
 
+    # Légende de la carte
+    - {SYMBOLS[VOID]} : case vide (franchissable)
+    - {SYMBOLS[PLAYER]} : toi (le joueur)
+    - {SYMBOLS[ENNEMY]} : ennemi (non franchissable)
+    - {SYMBOLS[GOLD]} : or (franchissable, objectif)
+
+    # Carte complète
+    {render_map(world_map)}
+    {feedback_block}
     # Perception
     {player_perception}
     """
@@ -235,17 +267,18 @@ def decide(player_perception) -> PlayerDecision | None:
 def game_loop(world_map: np.ndarray, max_turns = 10):
     world_map = world_map.copy()
     move_history = []
-    
+    last_move_feedback = None
+
     for turn in range(max_turns):
         print(f"\n =================== [Turn {turn + 1}] ===================")
         show_map(world_map)
 
         player_pos = localize(world_map, PLAYER)[0]
-        
+
         p = perception(world_map)
         # p["move_history"] = move_history
 
-        decision: PlayerDecision | None = decide(p)
+        decision: PlayerDecision | None = decide(p, world_map, last_move_feedback)
 
         if decision is not None:
             print(f"\t → LLM decision: {decision.direction.value}")
@@ -262,6 +295,20 @@ def game_loop(world_map: np.ndarray, max_turns = 10):
                 break
 
             new_pos = move_result["new_pos"]
+            possible_directions = available_directions(world_map, new_pos)
+
+            if move_result["invalid_move"]:
+                last_move_feedback = (
+                    f"Mouvement refusé : impossible d'aller en direction '{decision.direction.value}' "
+                    f"(hors de la carte ou case non franchissable). "
+                    f"Depuis ta position actuelle, les directions possibles sont : {possible_directions}."
+                )
+                print(f"\t → Invalid move: {last_move_feedback}")
+            else:
+                last_move_feedback = (
+                    f"Tu t'es déplacé en direction '{decision.direction.value}'. "
+                    f"Depuis ta nouvelle position, les directions possibles sont : {possible_directions}."
+                )
 
 
 

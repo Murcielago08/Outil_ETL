@@ -49,15 +49,18 @@ VOID        = 0
 PLAYER      = 1
 ENNEMY      = 2
 GOLD        = 3
+WALL        = 4
 
-SYMBOLS = {VOID: "·", PLAYER: "👤", ENNEMY: "👹", GOLD: "💰"}
+SYMBOLS = {VOID: "·", PLAYER: "👤", ENNEMY: "👹", GOLD: "💰", WALL: "🧱"}
+FOG = "?"
+UNSEEN = -1
 
 # %%
 initial_map = np.array([
     [0, 0, 0, 0, 0, 0, 0],
-    [0, 1, 0, 0, 2, 0, 3], # (1, 1) # (1, 4) # (1, 6)
-    [0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0],
+    [0, 1, 0, 4, 2, 0, 3], # (1, 1) # (1, 4) # (1, 6)
+    [0, 0, 0, 4, 0, 0, 0],
+    [0, 0, 0, 4, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 3], # (5, 6)
     [0, 0, 0, 0, 0, 0, 0],
@@ -163,9 +166,99 @@ def render_map(world_map):
     )
 
 
-def show_map(world_map):
-    print(render_map(world_map))
+def show_map(world_map, memory_map=None):
+    if memory_map is None:
+        print(render_map(world_map))
+    else:
+        print(render_memory_map(memory_map))
     print('-----------------------------------------------------')
+
+
+# %% [markdown]
+# # Moteur de vision
+
+# %%
+def bresenham_line(r0, c0, r1, c1):
+    points = []
+    dr, dc = abs(r1 - r0), abs(c1 - c0)
+    sr = 1 if r1 > r0 else -1
+    sc = 1 if c1 > c0 else -1
+    r, c = r0, c0
+
+    if dr > dc:
+        err = dr / 2.0
+        while r != r1:
+            points.append((r, c))
+            err -= dc
+            if err < 0:
+                c += sc
+                err += dr
+            r += sr
+    else:
+        err = dc / 2.0
+        while c != c1:
+            points.append((r, c))
+            err -= dr
+            if err < 0:
+                r += sr
+                err += dc
+            c += sc
+
+    points.append((r1, c1))
+    return points
+
+
+def has_line_of_sight(world_map, origin, target):
+    path = bresenham_line(origin[0], origin[1], target[0], target[1])
+
+    for r, c in path[1:-1]:
+        if world_map[r, c] == WALL:
+            return False
+
+    return True
+
+
+def visible_cells(world_map: np.ndarray, pos):
+    n_rows, n_cols = world_map.shape
+    return [
+        (r, c)
+        for r in range(n_rows)
+        for c in range(n_cols)
+        if has_line_of_sight(world_map, pos, (r, c))
+    ]
+
+
+def render_visible_map(world_map: np.ndarray, pos):
+    visible = set(visible_cells(world_map, pos))
+    rows = []
+
+    for r in range(world_map.shape[0]):
+        row_symbols = []
+        for c in range(world_map.shape[1]):
+            if (r, c) in visible:
+                row_symbols.append(SYMBOLS.get(world_map[r, c], "?"))
+            else:
+                row_symbols.append(FOG)
+        rows.append("\t".join(row_symbols))
+
+    return "\n".join(rows)
+
+
+def create_memory_map(world_map: np.ndarray):
+    return np.full(world_map.shape, UNSEEN, dtype=world_map.dtype)
+
+
+def update_memory_map(memory_map: np.ndarray, world_map: np.ndarray, pos):
+    for r, c in visible_cells(world_map, pos):
+        memory_map[r, c] = world_map[r, c]
+    return memory_map
+
+
+def render_memory_map(memory_map: np.ndarray):
+    return "\n".join(
+        "\t".join(FOG if cell == UNSEEN else SYMBOLS.get(cell, "?") for cell in row)
+        for row in memory_map
+    )
 
 
 # %% [markdown]
@@ -220,12 +313,22 @@ def move(world_map: np.ndarray, old_pos, new_pos):
 # # Moteur de décision
 
 # %%
-def decide(player_perception, world_map: np.ndarray, last_move_feedback: str | None = None) -> PlayerDecision | None:
+MOVE_HISTORY_WINDOW = 5
+
+
+def decide(player_perception, memory_map: np.ndarray, last_move_feedback: str | None = None, move_history: list[str] | None = None) -> PlayerDecision | None:
     feedback_block = f"""
     # Feedback du tour précédent
     - {last_move_feedback}
     - Ne refais pas ce mouvement, choisis une autre direction.
     """ if last_move_feedback else ""
+
+    recent_moves = (move_history or [])[-MOVE_HISTORY_WINDOW:]
+    history_block = f"""
+    # Historique des derniers déplacements
+    - {recent_moves}
+    - Évite de faire des allers-retours entre les mêmes directions opposées.
+    """ if recent_moves else ""
 
     prompt = f"""
     # Contexte
@@ -239,12 +342,18 @@ def decide(player_perception, world_map: np.ndarray, last_move_feedback: str | N
     - {SYMBOLS[PLAYER]} : toi (le joueur)
     - {SYMBOLS[ENNEMY]} : ennemi (non franchissable)
     - {SYMBOLS[GOLD]} : or (franchissable, objectif)
+    - {SYMBOLS[WALL]} : mur (non franchissable, bloque ta vision au-delà)
+    - {FOG} : case hors de ton champ de vision
 
-    # Carte complète
-    {render_map(world_map)}
+    # Carte connue (cases déjà vues, mises à jour uniquement quand visibles ; le reste reste en mémoire)
+    {render_memory_map(memory_map)}
     {feedback_block}
+    {history_block}
     # Perception
     {player_perception}
+
+    # Rappel de l'objectif
+    - Trouve le plus court chemin vers l'or
     """
 
     # print(prompt)
@@ -254,7 +363,7 @@ def decide(player_perception, world_map: np.ndarray, last_move_feedback: str | N
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_format=PlayerDecision,
-        temperature=1
+        temperature=0.3
     )
 
     return response.choices[0].message.parsed or None
@@ -264,21 +373,22 @@ def decide(player_perception, world_map: np.ndarray, last_move_feedback: str | N
 # # Game loop (simulation)
 
 # %%
-def game_loop(world_map: np.ndarray, max_turns = 10):
+def game_loop(world_map: np.ndarray, max_turns = 100):
     world_map = world_map.copy()
+    memory_map = create_memory_map(world_map)
     move_history = []
     last_move_feedback = None
 
     for turn in range(max_turns):
         print(f"\n =================== [Turn {turn + 1}] ===================")
-        show_map(world_map)
 
         player_pos = localize(world_map, PLAYER)[0]
+        update_memory_map(memory_map, world_map, player_pos)
+        show_map(world_map, memory_map)
 
         p = perception(world_map)
-        # p["move_history"] = move_history
 
-        decision: PlayerDecision | None = decide(p, world_map, last_move_feedback)
+        decision: PlayerDecision | None = decide(p, memory_map, last_move_feedback, move_history)
 
         if decision is not None:
             print(f"\t → LLM decision: {decision.direction.value}")
@@ -313,7 +423,7 @@ def game_loop(world_map: np.ndarray, max_turns = 10):
 
 
 # %%
-game_loop(world_map=initial_map, max_turns=10)
+game_loop(world_map=initial_map, max_turns=100)
 
 # %% [markdown]
 # # ToDo 01/07

@@ -1,0 +1,10 @@
+version: 2
+
+sources:
+  - name: simulation_bronze
+    loader: parquet
+    meta:
+      # On remonte d'un dossier pour trouver le dossier "data" visible sur votre capture
+      external_location: "../data/bronze/simulation_logs.parquet"
+    tables:
+      - name: raw_logs

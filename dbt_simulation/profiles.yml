@@ -1,0 +1,7 @@
+dbt_simulation:
+  outputs:
+    dev:
+      type: duckdb
+      # On remonte d'un niveau pour taper dans le fichier de votre racine
+      path: "../Projet_ETL.duckdb"
+  target: dev

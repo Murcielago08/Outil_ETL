@@ -17,6 +17,11 @@ import numpy as np
 from openai import OpenAI
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import pandas as pd
+import uuid
+import time
+from datetime import datetime
+import duckdb
 
 import os
 from enum import Enum
@@ -56,36 +61,43 @@ FOG = "?"
 UNSEEN = -1
 
 # %%
-initial_map = np.array([
-    [0, 0, 0, 0, 0, 0, 0],
-    [0, 1, 0, 4, 2, 0, 3], # (1, 1) # (1, 4) # (1, 6)
-    [0, 0, 0, 4, 0, 0, 0],
-    [0, 0, 0, 4, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 3], # (5, 6)
-    [0, 0, 0, 0, 0, 0, 0],
-])
+def generate_map(n_rows=7, n_cols=7, n_walls=5, n_golds=1, n_ennemies=1, seed=None):
+    rng = np.random.default_rng(seed)
+    world_map = np.full((n_rows, n_cols), VOID, dtype=int)
+
+    positions = [(r, c) for r in range(n_rows) for c in range(n_cols)]
+    rng.shuffle(positions)
+
+    entities = [PLAYER] + [ENNEMY] * n_ennemies + [GOLD] * n_golds + [WALL] * n_walls
+    for entity, (r, c) in zip(entities, positions):
+        world_map[r, c] = entity
+
+    return world_map
+
+
+# %%
+initial_map = generate_map()
 initial_map
 
 # %% [markdown]
 # # Couche de contrat
 
 # %%
-H = "HAUT"
-B = "BAS"
-G = "GAUCHE"
-D = "DROITE"
+# H = "HAUT"
+# B = "BAS"
+# G = "GAUCHE"
+# D = "DROITE"
 
-# H = "TOP"
-# B = "DOWN"
-# G = "LEFT"
-# D = "RIGHT"
+H = "TOP"
+B = "DOWN"
+G = "LEFT"
+D = "RIGHT"
 
 class Direction(str, Enum):
-    HAUT       = H
-    BAS        = B
-    GAUCHE     = G
-    DROITE     = D
+    TOP        = H
+    DOWN       = B
+    LEFT       = G
+    RIGHT      = D
 
 
 class PlayerDecision(BaseModel):
@@ -135,6 +147,24 @@ def compute_nearest_delta(entities_positions, reference_pos):
     }
 
 
+def delta_to_direction_label(delta: dict) -> str:
+    """Convertit un delta (row, col) en label directionnel lisible."""
+    row, col = delta["row"], delta["col"]
+
+    parts = []
+    if row < 0:
+        parts.append("TOP")
+    elif row > 0:
+        parts.append("DOWN")
+
+    if col < 0:
+        parts.append("LEFT")
+    elif col > 0:
+        parts.append("RIGHT")
+
+    return "-".join(parts) if parts else "ICI"
+
+
 # %%
 def perception(world_map):
 
@@ -148,13 +178,18 @@ def perception(world_map):
     nearest_gold_delta = compute_nearest_delta(golds_positions, player_position)
     nearest_ennemy_delta = compute_nearest_delta(ennemies_positions, player_position)
 
+    nearest_gold_direction = delta_to_direction_label(nearest_gold_delta)
+    nearest_ennemy_direction = delta_to_direction_label(nearest_ennemy_delta)
+
     return {
         "ennemies_distances": ennemies_distances.tolist(),
         "ennemies_count": len(ennemies_distances),
         "nearest_ennemy_delta": nearest_ennemy_delta,
+        "nearest_ennemy_direction": nearest_ennemy_direction,
         "golds_distances": golds_distances.tolist(),
         "golds_count": len(golds_distances),
         "nearest_gold_delta": nearest_gold_delta,
+        "nearest_gold_direction": nearest_gold_direction,
     }
 
 
@@ -316,7 +351,7 @@ def move(world_map: np.ndarray, old_pos, new_pos):
 MOVE_HISTORY_WINDOW = 5
 
 
-def decide(player_perception, memory_map: np.ndarray, last_move_feedback: str | None = None, move_history: list[str] | None = None) -> PlayerDecision | None:
+def decide(player_perception, memory_map: np.ndarray, possible_directions: list[str], last_move_feedback: str | None = None, move_history: list[str] | None = None) -> PlayerDecision | None:
     feedback_block = f"""
     # Feedback du tour précédent
     - {last_move_feedback}
@@ -336,6 +371,7 @@ def decide(player_perception, memory_map: np.ndarray, last_move_feedback: str | 
 
     # Objectif
     - Trouve le plus court chemin vers l'or
+    - Découvre l'intégralité de la carte : il reste {int(np.count_nonzero(memory_map == UNSEEN))} case(s) encore inconnues ({FOG})
 
     # Légende de la carte
     - {SYMBOLS[VOID]} : case vide (franchissable)
@@ -354,6 +390,10 @@ def decide(player_perception, memory_map: np.ndarray, last_move_feedback: str | 
 
     # Rappel de l'objectif
     - Trouve le plus court chemin vers l'or
+    - Explore les cases inconnues ({FOG}) pour découvrir toute la carte
+
+    # Actions possibles depuis ta position actuelle
+    - {possible_directions}
     """
 
     # print(prompt)
@@ -373,41 +413,78 @@ def decide(player_perception, memory_map: np.ndarray, last_move_feedback: str | 
 # # Game loop (simulation)
 
 # %%
-def game_loop(world_map: np.ndarray, max_turns = 100):
+def game_loop(world_map: np.ndarray, max_turns = 100, model_name = MODEL):
+    # Initialisation des métadonnées de la partie
+    game_id = str(uuid.uuid4())
     world_map = world_map.copy()
     memory_map = create_memory_map(world_map)
     move_history = []
     last_move_feedback = None
 
+    # Logs structurés de chaque tour (couche bronze)
+    game_logs = []
+    game_status = "ECHEC"  # statut par défaut si la boucle va au bout sans tout ramasser
+
     for turn in range(max_turns):
-        print(f"\n =================== [Turn {turn + 1}] ===================")
+        turn_num = turn + 1
+        print(f"\n =================== [Turn {turn_num}] ===================")
 
         player_pos = localize(world_map, PLAYER)[0]
         update_memory_map(memory_map, world_map, player_pos)
         show_map(world_map, memory_map)
 
         p = perception(world_map)
+        possible_directions = available_directions(world_map, player_pos)
 
-        decision: PlayerDecision | None = decide(p, memory_map, last_move_feedback, move_history)
+        start_time = time.time()
+        decision: PlayerDecision | None = decide(p, memory_map, possible_directions, last_move_feedback, move_history)
+        response_time_sec = time.time() - start_time
+
+        turn_log = {
+            "game_id": game_id,
+            "run_timestamp": datetime.now().isoformat(),
+            "model_name": model_name,
+            "turn_number": turn_num,
+            "player_row": int(player_pos[0]),
+            "player_col": int(player_pos[1]),
+            "golds_count": int(p["golds_count"]),
+            "nearest_gold_distance": float(min(p["golds_distances"])) if p["golds_distances"] else None,
+            "nearest_gold_direction": p["nearest_gold_direction"],
+            "enemies_count": int(p["ennemies_count"]),
+            "llm_decision": decision.direction.value if decision else None,
+            "response_time_sec": float(response_time_sec),
+            "is_invalid_move": False,
+            "game_outcome": "EN_COURS",
+        }
 
         if decision is not None:
             print(f"\t → LLM decision: {decision.direction.value}")
             # print(f"\t → LLM justification: {decision.directionJustification}")
 
-            move_history.append(decision.direction.value)
-
             d_row, d_col = MOVES[decision.direction.value]
             new_pos = (player_pos[0] + d_row, player_pos[1] + d_col)
 
             move_result = move(world_map, player_pos, new_pos)
+
+            if move_result["invalid_move"]:
+                turn_log["is_invalid_move"] = True
+
             if move_result["gold_collected"]:
-                print("FOUND GOLD !!!")
-                break
+                golds_remaining = len(localize(world_map, GOLD))
+                print(f"FOUND GOLD !!! ({golds_remaining} restante(s))")
+                if golds_remaining == 0:
+                    move_history.append(f"{decision.direction.value} (or ramassé, dernière pièce)")
+                    print("TOUT L'OR A ÉTÉ RÉCUPÉRÉ !!!")
+                    game_status = "VICTOIRE"
+                    turn_log["game_outcome"] = game_status
+                    game_logs.append(turn_log)
+                    break
 
             new_pos = move_result["new_pos"]
             possible_directions = available_directions(world_map, new_pos)
 
             if move_result["invalid_move"]:
+                move_history.append(f"{decision.direction.value} (refusé)")
                 last_move_feedback = (
                     f"Mouvement refusé : impossible d'aller en direction '{decision.direction.value}' "
                     f"(hors de la carte ou case non franchissable). "
@@ -415,15 +492,57 @@ def game_loop(world_map: np.ndarray, max_turns = 100):
                 )
                 print(f"\t → Invalid move: {last_move_feedback}")
             else:
+                move_history.append(
+                    f"{decision.direction.value} (réussi, or ramassé)" if move_result["gold_collected"] else decision.direction.value
+                )
                 last_move_feedback = (
                     f"Tu t'es déplacé en direction '{decision.direction.value}'. "
                     f"Depuis ta nouvelle position, les directions possibles sont : {possible_directions}."
                 )
+        else:
+            game_status = "ERREUR_LLM"
+            turn_log["game_outcome"] = game_status
+            game_logs.append(turn_log)
+            break
 
+        game_logs.append(turn_log)
+
+    # Statut final pour les tours restés "EN_COURS" si la partie se termine sans victoire
+    if game_status == "ECHEC":
+        for log in game_logs:
+            if log["game_outcome"] == "EN_COURS":
+                log["game_outcome"] = "TIMEOUT"
+
+    # Exportation vers la couche bronze (via DuckDB pour éviter le bug PyArrow)
+    df_new = pd.DataFrame(game_logs)
+
+    os.makedirs("data/bronze", exist_ok=True)
+    parquet_path = "data/bronze/simulation_logs.parquet"
+
+    try:
+        if os.path.exists(parquet_path):
+            df_total = duckdb.sql(f"""
+                SELECT * FROM read_parquet('{parquet_path}')
+                UNION ALL
+                SELECT * FROM df_new
+            """).df()
+        else:
+            df_total = df_new
+
+        duckdb.sql(f"COPY df_total TO '{parquet_path}' (FORMAT PARQUET)")
+        print(f"\n[DATA ENG] {len(df_new)} lignes injectées avec succès via DuckDB dans ({parquet_path})")
+
+    except Exception as e:
+        print(f"\n[DATA ENG ERROR] Échec de l'exportation : {e}")
+
+    return game_status
 
 
 # %%
-game_loop(world_map=initial_map, max_turns=100)
+# Lancer plusieurs simulations à la suite pour générer de la donnée de benchmark
+for i in range(5):
+    print(f"\n=== LANCEMENT SIMULATION DE BENCHMARK N°{i + 1} ===")
+    game_loop(world_map=generate_map(), max_turns=100, model_name=MODEL)
 
 # %% [markdown]
 # # ToDo 01/07

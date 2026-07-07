@@ -368,6 +368,7 @@ def decide(player_perception, memory_map: np.ndarray, possible_directions: list[
     prompt = f"""
     # Contexte
     - Tu es un joueur qui veut ramasser de l'or
+    - Règle : tu ne peux pas traverser les murs ({SYMBOLS[WALL]}), tu dois les contourner
 
     # Objectif
     - Trouve le plus court chemin vers l'or
@@ -383,6 +384,7 @@ def decide(player_perception, memory_map: np.ndarray, possible_directions: list[
 
     # Carte connue (cases déjà vues, mises à jour uniquement quand visibles ; le reste reste en mémoire)
     {render_memory_map(memory_map)}
+    - Rappel : les murs ({SYMBOLS[WALL]}) sont infranchissables, ne tente jamais de les traverser
     {feedback_block}
     {history_block}
     # Perception
@@ -391,9 +393,11 @@ def decide(player_perception, memory_map: np.ndarray, possible_directions: list[
     # Rappel de l'objectif
     - Trouve le plus court chemin vers l'or
     - Explore les cases inconnues ({FOG}) pour découvrir toute la carte
+    - Rappel : les murs ({SYMBOLS[WALL]}) sont infranchissables, ne tente jamais de les traverser
 
-    # Actions possibles depuis ta position actuelle
+    # Actions possibles depuis ta position actuelle (les murs ont déjà été exclus de cette liste)
     - {possible_directions}
+    - Rappel final : tu ne peux pas traverser les murs ({SYMBOLS[WALL]})
     """
 
     # print(prompt)
@@ -403,7 +407,7 @@ def decide(player_perception, memory_map: np.ndarray, possible_directions: list[
         model=MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_format=PlayerDecision,
-        temperature=0.3
+        temperature=0.8
     )
 
     return response.choices[0].message.parsed or None
@@ -449,7 +453,7 @@ def game_loop(world_map: np.ndarray, max_turns = 100, model_name = MODEL):
             "player_col": int(player_pos[1]),
             "golds_count": int(p["golds_count"]),
             "nearest_gold_distance": float(min(p["golds_distances"])) if p["golds_distances"] else None,
-            "nearest_gold_direction": p["nearest_gold_direction"],
+            # "nearest_gold_direction": p["nearest_gold_direction"],
             "enemies_count": int(p["ennemies_count"]),
             "llm_decision": decision.direction.value if decision else None,
             "response_time_sec": float(response_time_sec),

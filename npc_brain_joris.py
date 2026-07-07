@@ -32,15 +32,14 @@ from enum import Enum
 load_dotenv()
 
 # %%
-# LLM_API_URL = os.environ["LLM_API_URL"]
+LLM_API_URL = os.environ["LLM_API_URL"]
 LLM_API_TOKEN = os.environ["LLM_API_TOKEN"]
-LLM_API_URL = "http://127.0.0.1:1234/v1"
-MODEL = "google/gemma-4-e2b"
+MODEL = os.environ["MODEL"]
 
 # %%
-# LLM_API_URL = os.environ["LMSTUDIO_BASE_URL"]
-# LLM_API_TOKEN = os.environ["LM_API_TOKEN"]
-# MODEL = "gemma-4-26B"
+# print(LLM_API_URL)
+# print(LLM_API_TOKEN)
+# print(MODEL)
 
 # %%
 client = OpenAI(

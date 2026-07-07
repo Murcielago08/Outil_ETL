@@ -1,77 +1,137 @@
-# Spécification du projet
+# Projet ETL - Simulation d’agent avec LLM
 
-## 1. Travail préalable
+Ce projet met en place une simulation de jeu en grille où un agent doit récupérer des pièces d’or tout en étant guidé par un modèle de langage. L’objectif est d’explorer un équilibre entre logique algorithmique et appel au LLM : le moteur de jeu gère la physique de la carte et les règles de déplacement, tandis que le LLM choisit une direction à partir d’un contexte perceptif limité.
 
-### 1.1 Stabilisation de la simulation
+## 1. Ce que fait le projet
 
-- Mettre en place la perception directionnelle de votre choix
-  - Gardez un équilibre en charge cognitive algorithmique et charge du LLM
-  - Ex: Si vous mettez un algo de Manhattan en place, le LLM n'a plus grand chose à faire
+Le code simule un monde en 2D composé de :
 
-### 1.2 Game design de la simulation
+- cases vides
+- murs
+- ennemis
+- pièces d’or
+- le joueur
 
-Définissez les règles finales de game design de la simulation :
+À chaque tour, le système :
 
-- Le joueur doit ramasser UNE pièce ou PLUSIEURS pièce ? (les plus de piece en 20 tours)
-- Les combats sont-il autorisés ? ()
-- Y'a t-il des combats sur la carte ?
-- Quel layout de départ (ennemis sur le chemin, pièce leurre, etc.)
+1. localise le joueur et les objets visibles,
+2. calcule une perception simple du monde,
+3. construit un contexte pour le LLM,
+4. demande une décision de déplacement,
+5. applique le mouvement dans la simulation,
+6. enregistre un log de partie dans une couche bronze.
 
-## 2. Data ingénierie
+## 2. Choix techniques retenus
 
-Une fois la simulation stabilisée, vous devez produire un benchmark pour démontrer la qualité de votre IA. **L'objectif n'est pas d'atteindre la meilleure qualité possible mais de trouver un point d'équilibre entre charge algorithmique et LLM.**
+### 2.1 Simulation de monde simple
 
-### 2.1 Définissez les objectifs de votre benchmark
+La carte est représentée par une grille NumPy. Les entités sont codées par des valeurs numériques afin de faciliter les opérations de lecture et de déplacement.
 
-Votre benchmark peut être construit sur trois axes :
+### 2.2 Perception et mémoire
 
-- Impact de la charge cognitive algorithmique
-- Qualité de la charge du LLM
-- Modèles de LLM
+Le moteur de perception fournit :
 
-Ces axes ne sont pas exhaustifs, vous pouvez en inventer d'autres.
+- les distances aux pièces d’or,
+- la direction du plus proche or,
+- les distances aux ennemis,
+- la direction du plus proche ennemi.
 
-### 2.2 Définissez les KPI (aggrégats métiers) de votre benchmark
+Le moteur de vision utilise un algorithme de ligne de vue (Bresenham) pour déterminer ce qui est visible depuis la position du joueur. Une mémoire de carte est ensuite mise à jour pour conserver les cases déjà observées.
 
-A partir de vos objectifs, définissez les indicateurs de performance qui démontreront la qualité ou la non-qualité de la simulation.
+### 2.3 Déplacement et règles
 
-Quelques indicateurs en exemple :
+Le joueur ne peut se déplacer que sur des cases franchissables :
 
-- Nombre de paramètre du modèle utilisé
-- Nombre de pas pour ramasser UNE pièce
-- Moyenne glissante de la distance à la pièce sur le temps
-- Nombre de déplacements inutiles
-- ...
+- vide,
+- or.
 
-Il existe de très nombreux indicateurs pertinents en lien avec vos règles de simulation et le benchmark visé.
+Les murs et les ennemis ne sont pas franchissables. Cela permet de garder un comportement simple et stable.
 
-### 2.3 Architecture de data ingénierie
+### 2.4 Décision LLM
 
-Contrat de sortie des données de la simulation :
+Le LLM ne choisit pas toute la stratégie à lui seul. Il reçoit :
 
-- Instrumenter la ``game_loop`` pour produire des logs de simulation
-- Définissez la structure des données générées par la simulation (quelles colonnes ?)
-- Comment assurer une certaine cohérence avec les données déjà générées qui vous faites évoluer la simulation en cours de route ?
+- la carte connue,
+- les directions possibles,
+- la perception du moment,
+- l’historique récent des mouvements.
 
-Pipeline de data ingénierie :
+Cette approche vise à garder une charge cognitive algorithmique suffisante tout en laissant au LLM un rôle utile dans la décision.
 
-- Mettre en place une architecture en médaillon 
-  - Couche bronze → résultats bruts de la simulation
-  - Silver → données propres
-  - Gold → aggrégats métiers
-- **Utilisation obligatoire de :** parquet, duckdb, dbt-duckdb
+### 2.5 Pipeline data engineering
 
-Etape finale (benchmark) :
+Les logs de simulation sont exportés vers un fichier Parquet via DuckDB. Ensuite, un pipeline dbt transforme ces données selon une architecture en médaillon :
 
-- Utiliser ces données pour produire une datavisalisation (reporting) propre pour chaque "typologie" de simulation
-  - Le rapport doit se mettre à jour à chaque run ou changement des paramètres de la simulation
-  - Il **n'est pas attendu** de mise à jour en temps réel, vous pouvez `dbt run + rebuild dataviz` à chaque fois
+- bronze : logs bruts de simulation,
+- silver : données nettoyées et structurées,
+- gold : agrégats métiers et KPI.
 
-## 3. Barème
+## 3. Structure du dépôt
 
-| Critère | Points |
-| --- | --- |
-| Qualité du benchmark | /8 |
-| Qualité de la data ingénierie | /8 |
-| Respect des consignes | /4 |
-| **Total** | **/20** |
+- [npc_brain.py](npc_brain.py) : version Python de la simulation.
+- [npc_brain.ipynb](npc_brain.ipynb) : version notebook interactive.
+- [data/bronze](data/bronze) : sorties Parquet de la couche bronze.
+- [dbt_simulation](dbt_simulation) : modèles dbt pour les couches silver/gold.
+- [Projet_ETL.duckdb](Projet_ETL.duckdb) : base DuckDB utilisée par le pipeline.
+
+## 4. Prérequis
+
+Le projet nécessite :
+
+- Python 3.10+
+- un environnement virtuel Python
+- un endpoint LLM compatible OpenAI (par exemple via LM Studio ou une autre API)
+
+## 5. Installation
+
+Sous Windows, depuis la racine du projet :
+
+```powershell
+py -m venv ETL
+.\ETL\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Puis créez un fichier .env à partir de [exemple.env](exemple.env) avec au minimum :
+
+```env
+LLM_API_URL = XXXXXXXXXXXXXXXXXXXXXX
+LLM_API_TOKEN = XXXXXXXXXXXXXXXXXXXXXX
+MODEL = google/gemma-4-e2b
+```
+
+Si vous utilisez un autre fournisseur ou un autre modèle, adaptez les valeurs en conséquence.
+
+## 6. Exécution
+
+### Lancer la simulation
+
+```powershell
+python npc_brain.py
+```
+
+Ou dans le notebook :
+
+```powershell
+jupyter notebook npc_brain.ipynb
+```
+
+### Résultats attendus
+
+À chaque exécution :
+
+- la simulation affiche la carte et les tours joués,
+- les logs de jeu sont écrits dans [data/bronze](data/bronze),
+- le pipeline dbt est lancé automatiquement si la configuration est correcte.
+
+### Voir la DB sur Duckdb
+
+```powershell
+duckdb Projet_ETL.duckdb
+```
+
+## 7. Notes utiles
+
+- Le script peut lancer plusieurs simulations de benchmark à la suite.
+- Les fichiers générés sont utiles pour comparer plusieurs configurations de modèle, de perception ou de stratégie.
+- Si vous souhaitez modifier la logique de décision, commencez par la fonction de décision dans [npc_brain.py](npc_brain.py).

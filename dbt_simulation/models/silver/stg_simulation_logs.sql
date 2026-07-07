@@ -7,7 +7,6 @@ SELECT
     cast(player_col as INTEGER) as player_col,
     cast(golds_count as INTEGER) as golds_count,
     cast(nearest_gold_distance as DOUBLE) as nearest_gold_distance,
-    cast(nearest_gold_direction as VARCHAR) as nearest_gold_direction,
     cast(enemies_count as INTEGER) as enemies_count,
     cast(llm_decision as VARCHAR) as llm_decision,
     cast(response_time_sec as DOUBLE) as response_time_sec,

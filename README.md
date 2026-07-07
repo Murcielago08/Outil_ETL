@@ -27,16 +27,20 @@ Le code simule un monde en 2D composé de :
 
 La carte est représentée par une grille NumPy. Les entités sont codées par des valeurs numériques afin de faciliter les opérations de lecture et de déplacement.
 
+La carte n'est pas figée : `generate_map()` génère une grille aléatoire dont la taille, le nombre de murs, de pièces d'or et d'ennemis sont paramétrables (`n_rows`, `n_cols`, `n_walls`, `n_golds`, `n_ennemies`, `seed`). Le joueur, les ennemis, l'or et les murs sont placés sur des positions distinctes tirées au sort à chaque génération.
+
+La partie peut contenir plusieurs pièces d'or : elle ne se termine en victoire que lorsque **toutes** les pièces ont été ramassées, pas seulement la première.
+
 ### 2.2 Perception et mémoire
 
 Le moteur de perception fournit :
 
 - les distances aux pièces d’or,
-- la direction du plus proche or,
-- les distances aux ennemis,
-- la direction du plus proche ennemi.
+- la direction du plus proche or.
 
-Le moteur de vision utilise un algorithme de ligne de vue (Bresenham) pour déterminer ce qui est visible depuis la position du joueur. Une mémoire de carte est ensuite mise à jour pour conserver les cases déjà observées.
+*(la perception de l'ennemi le plus proche — distance et direction — existe dans le code mais est actuellement désactivée)*
+
+Le moteur de vision utilise un algorithme de ligne de vue (Bresenham) pour déterminer ce qui est visible depuis la position du joueur. Une mémoire de carte est ensuite mise à jour pour conserver les cases déjà observées : une case vue au moins une fois garde son dernier état connu même si elle sort du champ de vision, plutôt que de redevenir un brouillard total.
 
 ### 2.3 Déplacement et règles
 
@@ -49,18 +53,27 @@ Les murs et les ennemis ne sont pas franchissables. Cela permet de garder un com
 
 ### 2.4 Décision LLM
 
-Le LLM ne choisit pas toute la stratégie à lui seul. Il reçoit :
+Le LLM ne choisit pas toute la stratégie à lui seul. Il reçoit, à chaque tour, un prompt unique (sans historique de conversation) contenant :
 
-- la carte connue,
-- les directions possibles,
+- la carte connue (mémoire + vision),
+- le feedback du tour précédent (mouvement refusé ou réussi),
+- l’historique récent des mouvements (fenêtré aux 5 derniers),
 - la perception du moment,
-- l’historique récent des mouvements.
+- les directions réellement jouables depuis sa position.
+
+Les objectifs sont explicitement hiérarchisés : ramasser l'or reste toujours prioritaire, l'exploration des cases inconnues n'est qu'un objectif secondaire. La règle « impossible de traverser les murs » est répétée à plusieurs endroits du prompt (contexte, carte, rappel d'objectif, actions possibles) pour renforcer la contrainte auprès d'un petit modèle.
 
 Cette approche vise à garder une charge cognitive algorithmique suffisante tout en laissant au LLM un rôle utile dans la décision.
 
-### 2.5 Pipeline data engineering
+### 2.5 Robustesse des appels LLM
 
-Les logs de simulation sont exportés vers un fichier Parquet via DuckDB. Ensuite, un pipeline dbt transforme ces données selon une architecture en médaillon :
+Un appel LLM peut échouer (erreur réseau, réponse du serveur sans `choices` exploitable, etc.). Ces cas sont interceptés (`try/except`) pour renvoyer une décision `None` plutôt que de faire planter toute la simulation ; le tour est alors journalisé avec le statut `ERREUR_LLM` et la partie s'arrête proprement.
+
+### 2.6 Pipeline data engineering
+
+Les logs de simulation (position, distances, décision du LLM, temps de réponse, validité du mouvement, statut de la partie) sont exportés vers un fichier Parquet via DuckDB (fusion avec les logs déjà présents si le fichier existe). Chaque partie se termine avec un statut (`VICTOIRE`, `ERREUR_LLM` ou `TIMEOUT`) enregistré sur chacun de ses tours.
+
+Ensuite, un pipeline dbt est lancé automatiquement par le script Python lui-même (`subprocess.run("dbt run", ...)`) et transforme ces données selon une architecture en médaillon :
 
 - bronze : logs bruts de simulation,
 - silver : données nettoyées et structurées,
@@ -132,6 +145,6 @@ duckdb Projet_ETL.duckdb
 
 ## 7. Notes utiles
 
-- Le script peut lancer plusieurs simulations de benchmark à la suite.
+- Par défaut, le script lance 5 simulations de benchmark à la suite, chacune sur une carte générée aléatoirement (`generate_map()`), pas la même carte répétée.
 - Les fichiers générés sont utiles pour comparer plusieurs configurations de modèle, de perception ou de stratégie.
 - Si vous souhaitez modifier la logique de décision, commencez par la fonction de décision dans [npc_brain.py](npc_brain.py).

@@ -23,6 +23,7 @@ import time
 from datetime import datetime
 import duckdb
 
+import subprocess
 import os
 from enum import Enum
 
@@ -30,15 +31,14 @@ from enum import Enum
 load_dotenv()
 
 # %%
-# LLM_API_URL = os.environ["LLM_API_URL"]
+LLM_API_URL = os.environ["LLM_API_URL"]
 LLM_API_TOKEN = os.environ["LLM_API_TOKEN"]
-LLM_API_URL = "http://127.0.0.1:1234/v1"
-MODEL = "google/gemma-4-e2b"
+MODEL = os.environ["MODEL"]
 
 # %%
 # LLM_API_URL = os.environ["LMSTUDIO_BASE_URL"]
 # LLM_API_TOKEN = os.environ["LM_API_TOKEN"]
-# MODEL = "gemma-4-26B"
+# MODEL = "gemma-4-26B" 
 
 # %%
 client = OpenAI(
@@ -184,8 +184,8 @@ def perception(world_map):
     return {
         "ennemies_distances": ennemies_distances.tolist(),
         "ennemies_count": len(ennemies_distances),
-        "nearest_ennemy_delta": nearest_ennemy_delta,
-        "nearest_ennemy_direction": nearest_ennemy_direction,
+        # "nearest_ennemy_delta": nearest_ennemy_delta,
+        # "nearest_ennemy_direction": nearest_ennemy_direction,
         "golds_distances": golds_distances.tolist(),
         "golds_count": len(golds_distances),
         "nearest_gold_delta": nearest_gold_delta,
@@ -403,12 +403,20 @@ def decide(player_perception, memory_map: np.ndarray, possible_directions: list[
     # print(prompt)
     print(str(player_perception))
 
-    response = client.beta.chat.completions.parse(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=PlayerDecision,
-        temperature=0.8
-    )
+    try:
+        response = client.beta.chat.completions.parse(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=PlayerDecision,
+            temperature=0.8
+        )
+    except Exception as e:
+        print(f"\t → Erreur lors de l'appel au LLM : {e}")
+        return None
+
+    if not response.choices:
+        print("\t → Réponse du LLM sans 'choices' exploitable.")
+        return None
 
     return response.choices[0].message.parsed or None
 
@@ -536,8 +544,31 @@ def game_loop(world_map: np.ndarray, max_turns = 100, model_name = MODEL):
         duckdb.sql(f"COPY df_total TO '{parquet_path}' (FORMAT PARQUET)")
         print(f"\n[DATA ENG] {len(df_new)} lignes injectées avec succès via DuckDB dans ({parquet_path})")
 
+        # =========================================================================
+        # AUTOMATISATION DBT : Version finale et robuste avec profiles-dir
+        # =========================================================================
+        print("\n Lancement automatique du pipeline dbt (dbt run)...")
+
+        # On ajoute "--profiles-dir" pour forcer Python à utiliser la bonne config
+        result = subprocess.run(
+            ["dbt", "run", "--project-dir", "dbt_simulation", "--profiles-dir", "dbt_simulation"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        print(result.stdout)
+        print("Pipeline dbt exécuté avec succès ! Projet_ETL.duckdb est à jour à la racine.")
+        # =========================================================================
+
+    except subprocess.CalledProcessError as e:
+        # Intercepte spécifiquement les erreurs d'exécution de dbt
+        print("\n[DATA ENG ERROR] Erreur lors de l'exécution de dbt :")
+        print(e.stderr if e.stderr else e.stdout)
+
     except Exception as e:
-        print(f"\n[DATA ENG ERROR] Échec de l'exportation : {e}")
+        # Intercepte les autres erreurs (écriture Parquet, dossier introuvable...)
+        print(f"\n[DATA ENG ERROR] Échec de l'exportation ou de dbt : {e}")
 
     return game_status
 
